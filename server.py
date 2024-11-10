@@ -17,6 +17,8 @@ logger = logging.getLogger('pc')
 pcs = set()
 task = None
 MAX_AUDIO_BUFFER_SIZE = 16000 * 20
+ROOT = os.path.dirname(__file__)
+
 
 class VoiceAgent(threading.Thread):
     def __init__(self, step=500, duration=5000):
@@ -49,7 +51,6 @@ class VoiceAgent(threading.Thread):
 
                 if self.audio_buffer.size > MAX_AUDIO_BUFFER_SIZE:
                     print('Buffer size is too large...')
-
             
             if audio_chunk is not None:
                 segments, info = self.model.transcribe(audio_chunk, language='en', beam_size=5)
@@ -74,7 +75,17 @@ class VoiceAgent(threading.Thread):
 voice_agent = VoiceAgent()
 
 async def index(request):
-    pass
+    content = open(os.path.join(ROOT, "index.html"), "r").read()
+    return web.Response(content_type="text/html", text=content)
+
+def filter_sdp_for_pcma(sdp):
+    lines = sdp.splitlines()
+    filtered_lines = []
+    for line in lines:
+        if line.startswith("a=rtpmap") and "PCMA" not in line:
+            continue
+        filtered_lines.append(line)
+    return '\n'.join(filtered_lines) + '\n'
 
 async def whip(request):
 
@@ -93,7 +104,6 @@ async def whip(request):
     @data_channel.on('open')
     async def on_open():
         print('Data channel open')
-        print(data_channel.readyState)
         global task
         if task is not None:
             task.cancel()
@@ -143,15 +153,20 @@ async def whip(request):
             log_info('Track %s ended', track.kind)
 
     await pc.setRemoteDescription(offer)
-
+    transceiver = pc.getTransceivers()[0]
+    codecs = transceiver.receiver.getCapabilities('audio').codecs
+    pcma_codec = []
+    for codec in codecs:
+        if codec.mimeType == 'audio/PCMA':
+            pcma_codec.append(codec)
+    transceiver.setCodecPreferences(pcma_codec)
     answer = await pc.createAnswer()
-
     await pc.setLocalDescription(answer)
-
+    sdp = filter_sdp_for_pcma(pc.localDescription.sdp)
     return web.Response(
         status=201,
         content_type='application/sdp',
-        text=pc.localDescription.sdp,
+        text=sdp,
     )
 
 async def on_shutdown(app):
